@@ -10,6 +10,9 @@ inputs:
   output-archive:
     description: ZIP destination (parent directory must exist).
     required: true
+  output-disk-image:
+    description: Optional signed and notarized DMG destination, containing the app and an Applications link (apps only).
+    default: ''
   team-id:
     description: Apple Team ID (use a GitHub secret for log masking).
     required: true
@@ -61,6 +64,7 @@ runs:
         DIST_TOOLS_ACTION_PATH: ${{ github.action_path }}
         APPLE_RELEASE_APP: ${{ inputs.app-path }}
         APPLE_RELEASE_OUTPUT: ${{ inputs.output-archive }}
+        APPLE_RELEASE_DMG: ${{ inputs.output-disk-image }}
         APPLE_RELEASE_BUNDLE_ID: ${{ inputs.bundle-id }}
         APPLE_TEAM_ID: ${{ inputs.team-id }}
         APPLE_CODE_SIGN_P12_BASE64: ${{ inputs.p12-base64 }}

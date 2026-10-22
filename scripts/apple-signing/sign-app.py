@@ -25,8 +25,8 @@ def sign(app_name):
     targets = []
     seen = set()
     for entry in plan:
-        if not isinstance(entry, dict) or set(entry) - {'path', 'entitlements'}:
-            raise ValueError('Signing entries support only path and entitlements')
+        if not isinstance(entry, dict) or set(entry) - {'path', 'entitlements', 'preserve-entitlements'}:
+            raise ValueError('Unsupported signing entry fields')
         relative = entry.get('path')
         if not isinstance(relative, str) or not relative or Path(relative).is_absolute():
             raise ValueError('Nested code paths must be relative to the app')
@@ -36,18 +36,24 @@ def sign(app_name):
         if any(parent in seen for parent in target.parents):
             raise ValueError('Signing plan must list children before their containers')
         seen.add(target)
-        targets.append((target, entry.get('entitlements', '')))
-    targets.append((app, os.environ.get('APPLE_ENTITLEMENTS', '')))
+        entitlements = entry.get('entitlements', '')
+        preserve = entry.get('preserve-entitlements', False)
+        if not isinstance(preserve, bool) or (preserve and entitlements):
+            raise ValueError('Use either an entitlements file or preserve-entitlements: true')
+        targets.append((target, entitlements, preserve))
+    targets.append((app, os.environ.get('APPLE_ENTITLEMENTS', ''), False))
 
     # Validate every entitlement before changing any signatures.
-    for _, entitlements in targets:
+    for _, entitlements, _ in targets:
         if not isinstance(entitlements, str) or (entitlements and not Path(entitlements).is_file()):
             raise ValueError('Entitlements must name an existing file')
-    for target, entitlements in targets:
+    for target, entitlements, preserve in targets:
         command = ['codesign', '--force', '--sign', identity, '--keychain', keychain,
                    '--options', 'runtime', '--timestamp']
         if entitlements:
             command += ['--entitlements', entitlements]
+        if preserve:
+            command += ['--preserve-metadata=entitlements']
         # Explicit targets preserve embedded payloads such as iOS code.
         subprocess.run(command + [str(target)], check=True, capture_output=True)
 

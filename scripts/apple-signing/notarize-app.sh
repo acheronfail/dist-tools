@@ -10,13 +10,21 @@ timeout="${APPLE_NOTARY_TIMEOUT:-20m}"
 [[ "$timeout" =~ ^([1-9]|[1-5][0-9]|60)m$ ]] || { echo 'Notary timeout must be between 1m and 60m.' >&2; exit 2; }
 : "${APPLE_TEAM_ID:?Set the publishing Apple Team ID}"
 [[ "$APPLE_TEAM_ID" =~ ^[A-Z0-9]{10}$ ]] || { echo 'Invalid Apple Team ID.' >&2; exit 2; }
-[[ -d "$app" && ( "$app" == *.app || "$app" == *.plugin ) && "$output" == *.zip ]] || { echo 'Expected an app or plugin bundle and ZIP output.' >&2; exit 2; }
+disk_image=false
+if [[ -f "$app" && "$app" == *.dmg && "$output" == *.dmg ]]; then
+    disk_image=true
+elif [[ ! -d "$app" || ( "$app" != *.app && "$app" != *.plugin ) || "$output" != *.zip ]]; then
+    echo 'Expected an app/plugin with ZIP output, or a disk image with DMG output.' >&2
+    exit 2
+fi
+verification=(--verify --strict)
+if [[ "$disk_image" == false ]]; then verification+=(--deep); fi
 requirement="anchor apple generic and identifier \"$bundle_id\" and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = \"$APPLE_TEAM_ID\""
 scripts="$(cd "$(dirname "$0")" && pwd)"
 python3 "$scripts/notary_auth.py" --validate
 (
     unset APPLE_NOTARY_APPLE_ID APPLE_NOTARY_PASSWORD APPLE_NOTARY_API_KEY APPLE_NOTARY_KEY_ID APPLE_NOTARY_ISSUER_ID
-    codesign --verify --deep --strict --test-requirement "=$requirement" "$app"
+    codesign "${verification[@]}" --test-requirement "=$requirement" "$app"
 )
 umask 077
 work="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/dist-tools-notary.XXXXXX")"
@@ -39,9 +47,16 @@ if [[ "$auth_mode" != keychain ]]; then
 fi
 
 unset APPLE_NOTARY_APPLE_ID APPLE_NOTARY_PASSWORD APPLE_NOTARY_API_KEY APPLE_NOTARY_KEY_ID APPLE_NOTARY_ISSUER_ID
-ditto -c -k --sequesterRsrc --keepParent "$app" "$work/upload.zip"
+if [[ "$disk_image" == true ]]; then
+    ditto "$app" "$work/upload.dmg"
+    app="$work/upload.dmg"
+    submission="$app"
+else
+    submission="$work/upload.zip"
+    ditto -c -k --sequesterRsrc --keepParent "$app" "$submission"
+fi
 submit_status=0
-xcrun notarytool submit "$work/upload.zip" "${authentication[@]}" \
+xcrun notarytool submit "$submission" "${authentication[@]}" \
     --wait --timeout "$timeout" --output-format json > "$work/result.json" || submit_status=$?
 # A transport error, timeout, malformed response or rejection never publishes a
 # replacement archive. Preserve the submission ID so a timed-out job is traceable.
@@ -99,18 +114,24 @@ for action in staple validate; do
         sleep "$delay"
     done
 done
-codesign --verify --deep --strict --test-requirement "=$requirement" "$app"
+codesign "${verification[@]}" --test-requirement "=$requirement" "$app"
 if [[ "$app" == *.plugin ]]; then
     codesign --verify --deep --strict --check-notarization --test-requirement "=$requirement and notarized" "$app"
+elif [[ "$disk_image" == true ]]; then
+    spctl --assess --type open --context context:primary-signature "$app"
 else
     spctl --assess --type execute "$app"
 fi
 
-# Staple the app, then rebuild the downloadable ZIP. The originally submitted
-# ZIP cannot carry a stapled ticket itself. Replace the output only after checks.
+# Bundle ZIPs are rebuilt after stapling. Disk images retain their own ticket.
 archive="$(mktemp "$(dirname "$output")/.dist-tools-notarized.XXXXXX")"
-ditto -c -k --sequesterRsrc --keepParent "$app" "$archive"
-unzip -tq "$archive"
+if [[ "$disk_image" == true ]]; then
+    ditto "$app" "$archive"
+    hdiutil verify "$archive"
+else
+    ditto -c -k --sequesterRsrc --keepParent "$app" "$archive"
+    unzip -tq "$archive"
+fi
 mv -f "$archive" "$output"
 archive=""
-printf 'Notarized macOS app: %s\n' "$output"
+printf 'Notarized macOS output: %s\n' "$output"

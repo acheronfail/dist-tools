@@ -15,6 +15,8 @@ Python 3 and a Developer ID Application certificate:
     app-path: build/MyApp.app
     bundle-id: com.example.myapp
     output-archive: build/MyApp.zip
+    # Optional: also create a signed, notarized DMG.
+    output-disk-image: build/MyApp.dmg
     team-id: ${{ secrets.APPLE_TEAM_ID }}
     p12-base64: ${{ secrets.MACOS_CODE_SIGN_P12_BASE64 }}
     p12-password: ${{ secrets.MACOS_CODE_SIGN_P12_PASSWORD }}
@@ -37,6 +39,11 @@ for all inputs and defaults.
 `app-path` also accepts `.plugin` bundles. Plugins use a notarization requirement
 check (`codesign --check-notarization`) instead of app execution assessment.
 Nested plugin libraries belong in the signing plan below.
+
+`output-disk-image` packages the stapled app with an Applications link, then signs,
+notarizes and staples the DMG. It is available for `.app` inputs only. The volume
+name comes from the app filename. ZIP and DMG outputs are replaced independently
+after their checks; consumers generate checksums and update feeds afterward.
 
 ### Authentication
 
@@ -71,6 +78,10 @@ signing; leave embedded payloads that must retain their original bytes unlisted.
 Signing is non-recursive. Architecture and app-specific preflight checks run
 in the caller.
 
+A signing-plan entry can use `"preserve-entitlements": true` to retain its
+existing entitlements when re-signing vendor helpers. This cannot be combined
+with an `entitlements` file on the same entry.
+
 `post-sign-command` runs trusted Bash before notarization with `APPLE_RELEASE_APP`
 set and notarization credentials removed from its environment:
 
@@ -78,8 +89,9 @@ set and notarization credentials removed from its environment:
 post-sign-command: '"$APPLE_RELEASE_APP/Contents/MacOS/myapp" --check-runtime'
 ```
 
-`notary-timeout` defaults to `20m` (range `1m`–`60m`). Allow additional job time for
-signing and ticket retries. `ticket-network-workaround: 'true'` optionally blocks
+`notary-timeout` defaults to `20m` per submission (range `1m`–`60m`); a DMG adds a
+second submission. Allow job time for signing and ticket retries too.
+`ticket-network-workaround: 'true'` optionally blocks
 UDP 443 for the rest of the hosted job to work around
 [runner ticket lookup failures](https://github.com/actions/runner-images/issues/14924).
 

@@ -31,7 +31,7 @@ const op = args.slice(0, 2).join(' ');
 const log = (value) => fs.appendFileSync(process.env.FAKE_LOG, JSON.stringify(value) + '\\n');
 log({ tool, args, operation: tool === 'xcrun' ? op : args[0], passwordInEnvironment: !!process.env.APPLE_NOTARY_PASSWORD, apiKeyInEnvironment: !!process.env.APPLE_NOTARY_API_KEY });
 if (tool === 'xcodebuild') { console.log('Xcode ' + (process.env.FAKE_XCODE_VERSION || '26.0')); process.exit(0); }
-if (tool === 'codesign') process.exit(process.env.FAKE_SIGNATURE_FAILURE || (args.includes('--check-notarization') && process.env.FAKE_NOTARIZATION_FAILURE) ? 1 : 0);
+if (tool === 'codesign') process.exit(process.env.FAKE_SIGNATURE_FAILURE || (args.at(-1).endsWith('.dmg') && process.env.FAKE_DMG_SIGNATURE_FAILURE) || (args.includes('--check-notarization') && process.env.FAKE_NOTARIZATION_FAILURE) ? 1 : 0);
 if (tool === 'xcrun') {
   if (op === 'notarytool store-credentials') {
     const key = args.includes('--key') ? args[args.indexOf('--key') + 1] : null;
@@ -41,7 +41,8 @@ if (tool === 'xcrun') {
   }
   if (op === 'notarytool submit') {
     if (process.env.FAKE_STATUS === 'malformed') { console.log('bad json'); process.exit(1); }
-    console.log(JSON.stringify({ id: process.env.FAKE_SUBMISSION_ID || '12345678-1234-1234-1234-123456789012', status: process.env.FAKE_STATUS }));
+    const status = args[2].endsWith('.dmg') ? (process.env.FAKE_DMG_STATUS || process.env.FAKE_STATUS) : process.env.FAKE_STATUS;
+    console.log(JSON.stringify({ id: process.env.FAKE_SUBMISSION_ID || '12345678-1234-1234-1234-123456789012', status }));
     process.exit(process.env.FAKE_SUBMIT_FAILURE || process.env.FAKE_STATUS === 'In Progress' ? 69 : 0);
   }
   if (op === 'notarytool history') { console.log('{}'); process.exit(process.env.FAKE_HISTORY_FAILURE ? 1 : 0); }
@@ -50,29 +51,43 @@ if (tool === 'xcrun') {
     process.exit(0);
   }
   if (op === 'stapler staple') {
-    if (process.env.FAKE_STAPLE_FAILURE) process.exit(1);
+    if (process.env.FAKE_STAPLE_FAILURE || (args[2].endsWith('.dmg') && process.env.FAKE_DMG_STAPLE_FAILURE)) process.exit(1);
     const counter = path.join(process.env.RUNNER_TEMP, 'staple-attempts');
     const attempt = fs.existsSync(counter) ? Number(fs.readFileSync(counter, 'utf8')) + 1 : 1;
     fs.writeFileSync(counter, String(attempt));
     if (attempt <= Number(process.env.FAKE_STAPLE_LOOKUP_FAILURES || 0)) process.exit(68);
-    fs.writeFileSync(path.join(args[2], '.ticket'), 'ticket');
+    if (fs.statSync(args[2]).isDirectory()) fs.writeFileSync(path.join(args[2], '.ticket'), 'ticket');
+    else fs.appendFileSync(args[2], '-ticket');
     process.exit(0);
   }
   if (op === 'stapler validate') {
-    if (process.env.FAKE_VALIDATE_FAILURE) process.exit(65);
+    if (process.env.FAKE_VALIDATE_FAILURE || (args[2].endsWith('.dmg') && process.env.FAKE_DMG_VALIDATE_FAILURE)) process.exit(65);
     const counter = path.join(process.env.RUNNER_TEMP, 'validate-attempts');
     const attempt = fs.existsSync(counter) ? Number(fs.readFileSync(counter, 'utf8')) + 1 : 1;
     fs.writeFileSync(counter, String(attempt));
     if (attempt <= Number(process.env.FAKE_VALIDATE_LOOKUP_FAILURES || 0)) process.exit(68);
-    process.exit(fs.existsSync(path.join(args[2], '.ticket')) ? 0 : 1);
+    const valid = fs.statSync(args[2]).isDirectory() ? fs.existsSync(path.join(args[2], '.ticket')) : fs.readFileSync(args[2], 'utf8').includes('-ticket');
+    process.exit(valid ? 0 : 1);
   }
 }
 if (tool === 'ditto') {
   const source = args[args.length - 2];
-  fs.writeFileSync(args[args.length - 1], fs.existsSync(path.join(source, '.ticket')) ? 'archive-with-ticket' : 'archive-without-ticket');
+  if (!args.includes('-c')) fs.cpSync(source, args.at(-1), { recursive: true });
+  else fs.writeFileSync(args.at(-1), fs.existsSync(path.join(source, '.ticket')) ? 'archive-with-ticket' : 'archive-without-ticket');
   process.exit(0);
 }
-if (tool === 'spctl') process.exit(process.env.FAKE_GATEKEEPER_FAILURE ? 1 : 0);
+if (tool === 'hdiutil') {
+  if (args[0] === 'create') {
+    if (process.env.FAKE_DMG_CREATE_FAILURE) process.exit(1);
+    const stage = args[args.indexOf('-srcfolder') + 1];
+    const app = fs.readdirSync(stage).find(name => name.endsWith('.app'));
+    log({ tool: 'disk-image-content', stapledApp: !!app && fs.existsSync(path.join(stage, app, '.ticket')), applicationsLink: fs.readlinkSync(path.join(stage, 'Applications')), mode: fs.statSync(stage).mode & 0o777 });
+    fs.writeFileSync(args.at(-1), 'disk-image-with-stapled-app');
+    process.exit(0);
+  }
+  if (args[0] === 'verify') process.exit(process.env.FAKE_DMG_VERIFY_FAILURE ? 1 : 0);
+}
+if (tool === 'spctl') process.exit(process.env.FAKE_GATEKEEPER_FAILURE || (args.includes('open') && process.env.FAKE_DMG_GATEKEEPER_FAILURE) ? 1 : 0);
 if (tool === 'unzip') process.exit(process.env.FAKE_ARCHIVE_FAILURE ? 1 : 0);
 if (tool === 'sleep' || tool === 'sudo') process.exit(0);
 if (tool === 'security') {
@@ -101,6 +116,7 @@ function fixture(suffix = ".app") {
     "xcodebuild",
     "codesign",
     "ditto",
+    "hdiutil",
     "spctl",
     "unzip",
     "security",
@@ -509,6 +525,9 @@ for (const plan of [
   [{ path: 'missing-code' }], [{ path: 'Contents' }, { path: 'Contents' }],
   [{ path: 'Contents' }, { path: 'Contents/Resources' }],
   [{ path: 'Contents', entitlements: 'missing-entitlements.plist' }],
+  [{ path: 'Contents', 'preserve-entitlements': 'true' }],
+  [{ path: 'Contents', 'preserve-entitlements': 1 }],
+  [{ path: 'Contents', 'preserve-entitlements': true, entitlements: 'other.plist' }],
   [{ path: 'Contents', unexpected: true }],
 ]) {
   test(`invalid nested signing plan fails before changing signatures: ${JSON.stringify(plan)}`, () => {
@@ -771,3 +790,88 @@ test('unsupported bundle types fail before signing or notarization', () => {
   assert.notEqual(runNotary(item).status, 0);
   assert.deepEqual(item.operations(), []);
 });
+
+test('nested vendor entitlements are preserved only for explicitly marked targets', () => {
+  const item = fixture();
+  const helper = join(item.app, 'Contents/Helpers/Updater.xpc');
+  mkdirSync(helper, { recursive: true });
+  const plan = join(item.path, 'plan.json');
+  writeFileSync(plan, JSON.stringify([{ path: 'Contents/Helpers/Updater.xpc', 'preserve-entitlements': true }]));
+  const result = runSigning(item, { APPLE_SIGNING_PLAN: plan });
+  assert.equal(result.status, 0, result.stderr);
+  const calls = item.operations();
+  assert.deepEqual(calls.map(x => x.args.at(-1)), [helper, item.app]);
+  assert.ok(calls[0].args.includes('--preserve-metadata=entitlements'));
+  assert.equal(calls[0].args.includes('--entitlements'), false);
+  assert.equal(calls[1].args.includes('--preserve-metadata=entitlements'), false);
+});
+
+function runRelease(item, extra = {}) {
+  return spawnSync('bash', [join(root, 'scripts/apple-signing/release-app.sh'), item.app, item.output, 'com.example.desktop'], {
+    env: { ...item.env, CODE_SIGN_IDENTITY: 'A'.repeat(40), CODE_SIGN_KEYCHAIN: '/tmp/test.keychain-db', ...extra },
+    encoding: 'utf8', timeout: 10_000,
+  });
+}
+
+test('optional DMG contains the stapled app, is signed and submitted separately, and passes disk-image checks', () => {
+  const item = fixture();
+  const diskImage = join(item.path, 'Example.dmg');
+  const result = runRelease(item, {
+    APPLE_RELEASE_DMG: diskImage,
+    APPLE_NOTARY_AUTH_MODE: 'apple-id', APPLE_NOTARY_APPLE_ID: 'test@example.invalid', APPLE_NOTARY_PASSWORD: 'secret-sentinel',
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(item.output, 'utf8'), 'archive-with-ticket');
+  assert.equal(readFileSync(diskImage, 'utf8'), 'disk-image-with-stapled-app-ticket');
+  const calls = item.operations();
+  const submissions = calls.filter(x => x.operation === 'notarytool submit');
+  assert.equal(submissions.length, 2);
+  assert.ok(submissions[0].args[2].endsWith('.zip'));
+  assert.ok(submissions[1].args[2].endsWith('.dmg'));
+  const content = calls.find(x => x.tool === 'disk-image-content');
+  assert.equal(content.stapledApp, true);
+  assert.equal(content.applicationsLink, '/Applications');
+  assert.equal(content.mode, 0o755);
+  const signing = calls.find(x => x.tool === 'codesign' && x.args.includes('--force') && x.args.at(-1).endsWith('.dmg'));
+  assert.ok(signing.args.includes('--timestamp'));
+  assert.ok(signing.args.includes('--identifier'));
+  assert.ok(calls.indexOf(signing) < calls.indexOf(submissions[1]));
+  const assessment = calls.find(x => x.tool === 'spctl' && x.args.includes('open'));
+  assert.ok(assessment.args.includes('context:primary-signature'));
+  assert.ok(calls.some(x => x.tool === 'hdiutil' && x.operation === 'verify'));
+  for (const call of calls.filter(x => ['codesign', 'hdiutil', 'ditto', 'spctl'].includes(x.tool))) {
+    assert.equal(call.passwordInEnvironment, false);
+    assert.equal(call.apiKeyInEnvironment, false);
+  }
+  assert.doesNotMatch(result.stdout + result.stderr, /secret-sentinel/);
+  assert.equal(readdirSync(item.path).some(x => /^dist-tools-(dmg|notary)\./.test(x)), false);
+});
+
+for (const extra of [
+  { FAKE_DMG_CREATE_FAILURE: '1' }, { FAKE_DMG_SIGNATURE_FAILURE: '1' },
+  { FAKE_DMG_STATUS: 'Invalid' }, { FAKE_DMG_STAPLE_FAILURE: '1' },
+  { FAKE_DMG_VALIDATE_FAILURE: '1' }, { FAKE_DMG_GATEKEEPER_FAILURE: '1' },
+  { FAKE_DMG_VERIFY_FAILURE: '1' },
+]) {
+  test(`DMG failure preserves existing DMG and removes temporary files: ${JSON.stringify(extra)}`, () => {
+    const item = fixture();
+    const diskImage = join(item.path, 'Example.dmg');
+    writeFileSync(diskImage, 'previous-disk-image');
+    const result = runRelease(item, { APPLE_RELEASE_DMG: diskImage, ...extra });
+    assert.notEqual(result.status, 0);
+    assert.equal(readFileSync(diskImage, 'utf8'), 'previous-disk-image');
+    assert.equal(readFileSync(item.output, 'utf8'), 'archive-with-ticket');
+    assert.doesNotMatch(result.stdout + result.stderr, new RegExp('A'.repeat(40)));
+    assert.equal(readdirSync(item.path).some(x => /^dist-tools-(dmg|notary)\./.test(x) || x.startsWith('.dist-tools-notarized.')), false);
+  });
+}
+
+for (const [suffix, destination] of [
+  ['.plugin', 'Example.dmg'], ['.app', 'Example.zip'], ['.app', 'missing/Example.dmg'],
+]) {
+  test(`invalid DMG destination fails before signing: ${suffix} ${destination}`, () => {
+    const item = fixture(suffix);
+    assert.notEqual(runRelease(item, { APPLE_RELEASE_DMG: join(item.path, destination) }).status, 0);
+    assert.deepEqual(item.operations(), []);
+  });
+}
