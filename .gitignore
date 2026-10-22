@@ -1,0 +1,19 @@
+# Local configuration and signing files
+.local/
+.env
+.env.*
+!.env.example
+*.p12
+*.pfx
+*.p8
+*.pem
+*.key
+*.keychain
+*.keychain-db
+*.mobileprovision
+*.provisionprofile
+
+# Generated files
+__pycache__/
+*.pyc
+.DS_Store

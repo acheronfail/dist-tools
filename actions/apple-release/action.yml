@@ -1,0 +1,82 @@
+name: Apple direct-download release
+description: Sign an existing macOS app, notarize it, staple it, and atomically package a verified ZIP.
+inputs:
+  app-path:
+    description: Path to the already-built .app bundle.
+    required: true
+  bundle-id:
+    description: Expected signed bundle identifier.
+    required: true
+  output-archive:
+    description: ZIP destination (parent directory must exist).
+    required: true
+  team-id:
+    description: Apple Team ID (use a GitHub secret for log masking).
+    required: true
+  p12-base64:
+    description: Base64-encoded Developer ID Application PKCS12.
+    required: true
+  p12-password:
+    description: PKCS12 password.
+    required: true
+  notary-apple-id:
+    description: Notarization Apple Account email.
+    default: ''
+  notary-password:
+    description: Apple app-specific password.
+    default: ''
+  notary-auth-mode:
+    description: Select apple-id, api-team, or api-individual. Mixed credentials are rejected.
+    default: apple-id
+  notary-api-key:
+    description: PEM private key text (API modes only).
+    default: ''
+  notary-key-id:
+    description: App Store Connect API key ID (API modes only).
+    default: ''
+  notary-issuer-id:
+    description: UUID issuer ID for api-team; must be omitted for api-individual.
+    default: ''
+  entitlements:
+    description: Optional entitlements file for the outer app, relative to the working directory.
+    default: ''
+  signing-plan:
+    description: Optional JSON file listing nested code paths in signing order; see README.
+    default: ''
+  post-sign-command:
+    description: Optional trusted shell audit after signing, before notarization; APPLE_RELEASE_APP is the app path.
+    default: ''
+  notary-timeout:
+    description: Notary wait limit, from 1m to 60m.
+    default: 20m
+  ticket-network-workaround:
+    description: Block UDP 443 on the disposable hosted runner for the rest of this job.
+    default: 'false'
+runs:
+  using: composite
+  steps:
+    - name: Sign, notarize, staple and package
+      shell: bash
+      env:
+        DIST_TOOLS_ACTION_PATH: ${{ github.action_path }}
+        APPLE_RELEASE_APP: ${{ inputs.app-path }}
+        APPLE_RELEASE_OUTPUT: ${{ inputs.output-archive }}
+        APPLE_RELEASE_BUNDLE_ID: ${{ inputs.bundle-id }}
+        APPLE_TEAM_ID: ${{ inputs.team-id }}
+        APPLE_CODE_SIGN_P12_BASE64: ${{ inputs.p12-base64 }}
+        APPLE_CODE_SIGN_P12_PASSWORD: ${{ inputs.p12-password }}
+        APPLE_NOTARY_APPLE_ID: ${{ inputs.notary-apple-id }}
+        APPLE_NOTARY_PASSWORD: ${{ inputs.notary-password }}
+        APPLE_NOTARY_AUTH_MODE: ${{ inputs.notary-auth-mode }}
+        APPLE_NOTARY_API_KEY: ${{ inputs.notary-api-key }}
+        APPLE_NOTARY_KEY_ID: ${{ inputs.notary-key-id }}
+        APPLE_NOTARY_ISSUER_ID: ${{ inputs.notary-issuer-id }}
+        APPLE_ENTITLEMENTS: ${{ inputs.entitlements }}
+        APPLE_SIGNING_PLAN: ${{ inputs.signing-plan }}
+        APPLE_POST_SIGN_COMMAND: ${{ inputs.post-sign-command }}
+        APPLE_NOTARY_TIMEOUT: ${{ inputs.notary-timeout }}
+        APPLE_TICKET_NETWORK_WORKAROUND: ${{ inputs.ticket-network-workaround }}
+      run: |
+        bash "$DIST_TOOLS_ACTION_PATH/../../scripts/apple-signing/with-signing-identity.sh" \
+          bash "$DIST_TOOLS_ACTION_PATH/../../scripts/apple-signing/release-app.sh" \
+          "$APPLE_RELEASE_APP" "$APPLE_RELEASE_OUTPUT" "$APPLE_RELEASE_BUNDLE_ID"
