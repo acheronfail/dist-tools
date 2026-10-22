@@ -43,7 +43,7 @@ def run(args, *, data=None, password=None):
         raise CredentialError('Credential validation or GitHub operation failed; diagnostics suppressed.') from None
 
 
-def read_source(stream, *, signing_only=False):
+def read_source(stream):
     try:
         # Bound decrypted input; reject unknown fields rather than forwarding them.
         raw = stream.read(1_048_577)
@@ -61,18 +61,17 @@ def read_source(stream, *, signing_only=False):
             raise ValueError()
         if not re.fullmatch(r'[A-Z0-9]{10}', source['APPLE_TEAM_ID']):
             raise ValueError()
-        if not signing_only:
-            if 'APPLE_NOTARY_AUTH_MODE' not in source:
-                source['APPLE_NOTARY_AUTH_MODE'] = (
-                    'apple-id' if any(source.get(name) for name in FIELDS[:2]) else
-                    'api-team' if source.get('APPLE_NOTARY_ISSUER_ID') else 'api-individual')
-            validate({**source, 'GITHUB_ACTIONS': 'true'})
+        if 'APPLE_NOTARY_AUTH_MODE' not in source:
+            source['APPLE_NOTARY_AUTH_MODE'] = (
+                'apple-id' if any(source.get(name) for name in FIELDS[:2]) else
+                'api-team' if source.get('APPLE_NOTARY_ISSUER_ID') else 'api-individual')
+        validate({**source, 'GITHUB_ACTIONS': 'true'})
         return source
     except (ValueError, AuthError):
         raise CredentialError('Expected one complete credential JSON object on stdin; no mixed auth modes.') from None
 
 
-def inspect(source, *, signing_only=False):
+def inspect(source):
     try:
         p12 = base64.b64decode(''.join(source[P12].split()), validate=True)
     except ValueError:
@@ -117,7 +116,7 @@ def inspect(source, *, signing_only=False):
                           for field in ('notBefore', 'notAfter')]
         except (ValueError, TypeError):
             raise CredentialError('Unable to read certificate validity.') from None
-        if not signing_only and source['APPLE_NOTARY_AUTH_MODE'].startswith('api-'):
+        if source['APPLE_NOTARY_AUTH_MODE'].startswith('api-'):
             api = directory / 'api.p8'
             api.touch(mode=0o600)
             api.write_text(source['APPLE_NOTARY_API_KEY'])
@@ -126,7 +125,7 @@ def inspect(source, *, signing_only=False):
     # Reports contain validity and auth mode, without identity fields.
     return {'certificate_kind': 'Developer ID Application', 'not_before': start.isoformat(),
             'expires_at': end.isoformat(), 'days_remaining': math.floor((end - now).total_seconds() / 86400),
-            'valid_now': start <= now < end, 'auth_mode': source.get('APPLE_NOTARY_AUTH_MODE', 'not-checked')}
+            'valid_now': start <= now < end, 'auth_mode': source['APPLE_NOTARY_AUTH_MODE']}
 
 
 def load_repositories(config):
@@ -193,7 +192,9 @@ def create(credentials, p12, api_key, team, key_id, issuer, password):
 
 def renew(credentials, p12, password):
     with Path(credentials).open() as stream:
-        source = read_source(stream, signing_only=True)
+        source = json.load(stream)
+    if not isinstance(source, dict):
+        raise CredentialError('Expected a credential JSON object.')
     source[P12] = base64.b64encode(Path(p12).read_bytes()).decode()
     source[PASSWORD] = password
     save_credentials(credentials, source, replace=True)
@@ -233,9 +234,6 @@ def main(argv=None):
             command.add_argument('p12', type=Path, help='Developer ID Application .p12 export')
         command.add_argument('--credentials', type=Path, default=DEFAULT_CREDENTIALS,
                              help='Credential JSON (default: .local/credentials.json in the dist-tools checkout)')
-    health = operations.add_parser('health', help='Check certificate validity and optionally notary authentication')
-    health.add_argument('--issue-repo', help='Publish health issues to this repository')
-    health.add_argument('--check-notary', action='store_true', help='Also check notary authentication on a hosted Mac')
     args = parser.parse_args(argv)
     try:
         if args.operation in ('create', 'renew'):
@@ -258,9 +256,6 @@ def main(argv=None):
                 renew(args.credentials, args.p12, password)
             print('Credentials saved. Update your password-manager copy, then run sync.')
             return 0
-        if args.operation == 'health':
-            from health import check
-            return check(sys.stdin, issue_repo=args.issue_repo, check_notary=args.check_notary)
         targets = load_repositories(args.config) if args.operation == 'sync' else []
         source = read_source(sys.stdin)
         metadata = inspect(source)

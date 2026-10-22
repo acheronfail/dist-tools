@@ -95,7 +95,3 @@ need replacing only when rotated or revoked. Follow the certificate's expiry dat
 Check every repo reports `updated`, then remove the temporary JSON export.
 Sync validates credentials locally; the next signed build checks Apple acceptance.
 Use `sync --dry-run` to preview without GitHub calls, or `inspect` to check expiry.
-
-For weekly expiry warnings, include the tooling repo in `repositories.yaml` and
-set its `APPLE_CREDENTIAL_HEALTH_ENABLED` variable to `true`. Also set
-`APPLE_NOTARY_AUTH_HEALTH_ENABLED=true` for hosted Mac authentication checks.

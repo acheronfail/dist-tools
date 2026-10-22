@@ -54,7 +54,6 @@ if (tool === 'xcrun') {
     console.log(JSON.stringify({ id: process.env.FAKE_SUBMISSION_ID || '12345678-1234-1234-1234-123456789012', status }));
     process.exit(process.env.FAKE_SUBMIT_FAILURE || process.env.FAKE_STATUS === 'In Progress' ? 69 : 0);
   }
-  if (op === 'notarytool history') { console.log('{}'); process.exit(process.env.FAKE_HISTORY_FAILURE ? 1 : 0); }
   if (op === 'notarytool log') {
     fs.writeFileSync(args[args.length - 1], JSON.stringify({ issues: [{ code: 4000, message: 'Rejected test signature' }] }));
     process.exit(0);
@@ -738,21 +737,6 @@ for (const extra of [{ FAKE_AUTH_FAILURE: '1' }, { APPLE_NOTARY_API_KEY: 'invali
     assert.equal(readdirSync(item.path).some(x => x.startsWith('dist-tools-notary.')), false);
     assert.doesNotMatch(result.stdout + result.stderr, /PRIVATE KEY|invalid-secret-sentinel/);
     assert.equal(readFileSync(item.output, 'utf8'), 'previous-successful-download');
-  });
-}
-
-for (const fails of [false, true]) {
-  test(`read-only notary check ${fails ? 'reports auth failure' : 'succeeds'} and cleans its key without signing/submitting`, () => {
-    const item = fixture();
-    const result = spawnSync('bash', [join(root, 'scripts/apple-signing/check-notary-auth.sh')], {
-      env: { ...item.env, ...apiCredentials, APPLE_NOTARY_AUTH_MODE: 'api-individual',
-        ...(fails ? { FAKE_HISTORY_FAILURE: '1' } : {}) }, encoding: 'utf8', timeout: 10_000,
-    });
-    assert.equal(result.status === 0, !fails, result.stderr);
-    assert.ok(item.operations().some(x => x.operation === 'notarytool history'));
-    assert.equal(item.operations().some(x => x.tool === 'codesign' || x.operation === 'notarytool submit'), false);
-    assert.equal(readdirSync(item.path).some(x => x.startsWith('dist-tools-auth-health.')), false);
-    assert.doesNotMatch(result.stdout + result.stderr, /PRIVATE KEY/);
   });
 }
 
