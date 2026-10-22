@@ -9,8 +9,8 @@ scripts="$(cd "$(dirname "$0")" && pwd)"
 
 # Validate inputs before changing signatures or runner networking.
 [[ "$APPLE_TEAM_ID" =~ ^[A-Z0-9]{10}$ ]] || { echo 'Invalid Apple Team ID.' >&2; exit 2; }
-[[ "$bundle_id" =~ ^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$ ]] || { echo 'Invalid bundle ID.' >&2; exit 2; }
-[[ -d "$app" && "$app" == *.app && "$output" == *.zip ]] || { echo 'Expected an app bundle and ZIP output.' >&2; exit 2; }
+[[ "$bundle_id" =~ ^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)+$ ]] || { echo 'Invalid bundle ID.' >&2; exit 2; }
+[[ -d "$app" && ( "$app" == *.app || "$app" == *.plugin ) && "$output" == *.zip ]] || { echo 'Expected an app or plugin bundle and ZIP output.' >&2; exit 2; }
 timeout="${APPLE_NOTARY_TIMEOUT:-20m}"
 [[ "$timeout" =~ ^([1-9]|[1-5][0-9]|60)m$ ]] || { echo 'Notary timeout must be between 1m and 60m.' >&2; exit 2; }
 python3 "$scripts/notary_auth.py" --validate

@@ -11,8 +11,8 @@ import sys
 
 def sign(app_name):
     app = Path(app_name).resolve(strict=True)
-    if app.suffix != '.app' or not app.is_dir():
-        raise ValueError('Expected an app bundle')
+    if app.suffix not in ('.app', '.plugin') or not app.is_dir():
+        raise ValueError('Expected an app or plugin bundle')
     identity = os.environ.get('CODE_SIGN_IDENTITY', '')
     keychain = os.environ.get('CODE_SIGN_KEYCHAIN', '')
     if not re.fullmatch(r'[A-F0-9]{40}', identity) or not keychain:

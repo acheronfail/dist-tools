@@ -1,8 +1,8 @@
 name: Apple direct-download release
-description: Sign an existing macOS app, notarize it, staple it, and atomically package a verified ZIP.
+description: Sign an existing macOS app or plugin, notarize it, staple it, and package a verified ZIP.
 inputs:
   app-path:
-    description: Path to the already-built .app bundle.
+    description: Path to the already-built .app or .plugin bundle.
     required: true
   bundle-id:
     description: Expected signed bundle identifier.

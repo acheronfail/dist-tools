@@ -31,7 +31,7 @@ const op = args.slice(0, 2).join(' ');
 const log = (value) => fs.appendFileSync(process.env.FAKE_LOG, JSON.stringify(value) + '\\n');
 log({ tool, args, operation: tool === 'xcrun' ? op : args[0], passwordInEnvironment: !!process.env.APPLE_NOTARY_PASSWORD, apiKeyInEnvironment: !!process.env.APPLE_NOTARY_API_KEY });
 if (tool === 'xcodebuild') { console.log('Xcode ' + (process.env.FAKE_XCODE_VERSION || '26.0')); process.exit(0); }
-if (tool === 'codesign') process.exit(process.env.FAKE_SIGNATURE_FAILURE ? 1 : 0);
+if (tool === 'codesign') process.exit(process.env.FAKE_SIGNATURE_FAILURE || (args.includes('--check-notarization') && process.env.FAKE_NOTARIZATION_FAILURE) ? 1 : 0);
 if (tool === 'xcrun') {
   if (op === 'notarytool store-credentials') {
     const key = args.includes('--key') ? args[args.indexOf('--key') + 1] : null;
@@ -91,7 +91,7 @@ if (tool === 'probe') {
 }
 throw new Error('Unexpected fake tool invocation: ' + tool + ' ' + op);
 `;
-function fixture() {
+function fixture(suffix = ".app") {
   const path = realpathSync(mkdtempSync(join(tmpdir(), "dist-tools-notary-test-")));
   directories.push(path);
   const bin = join(path, "bin");
@@ -112,7 +112,7 @@ function fixture() {
     writeFileSync(file, fakeTool);
     chmodSync(file, 0o755);
   }
-  const app = join(path, "Example App.app");
+  const app = join(path, "Example Bundle" + suffix);
   mkdirSync(app);
   const output = join(path, "Example-App.zip");
   writeFileSync(output, "previous-successful-download");
@@ -731,4 +731,43 @@ test('the API Action path imports, audits without auth secrets, submits, and cle
   assert.ok(item.operations().some(x => x.operation === 'delete-keychain'));
   assert.equal(item.operations().find(x => x.tool === 'codesign').apiKeyInEnvironment, false);
   assert.doesNotMatch(result.stdout + result.stderr, /PRIVATE KEY|certificate-secret/);
+});
+
+
+test('plugin release signs nested code first and requires notarization without app assessment', () => {
+  const item = fixture('.plugin');
+  const core = join(item.app, 'Contents/MacOS/example_core.dylib');
+  mkdirSync(join(item.app, 'Contents/MacOS'), { recursive: true });
+  writeFileSync(core, 'plugin core');
+  const plan = join(item.path, 'signing-plan.json');
+  writeFileSync(plan, JSON.stringify([{ path: 'Contents/MacOS/example_core.dylib' }]));
+  const result = spawnSync('bash', [join(root, 'scripts/apple-signing/release-app.sh'), item.app, item.output, 'com.example.example_plugin'], {
+    env: { ...item.env, CODE_SIGN_IDENTITY: 'A'.repeat(40), CODE_SIGN_KEYCHAIN: '/tmp/test.keychain-db', APPLE_SIGNING_PLAN: plan },
+    encoding: 'utf8', timeout: 10_000,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const calls = item.operations();
+  assert.deepEqual(calls.filter(x => x.tool === 'codesign' && x.args.includes('--force')).map(x => x.args.at(-1)), [core, item.app]);
+  const check = calls.find(x => x.tool === 'codesign' && x.args.includes('--check-notarization'));
+  assert.ok(check.args.includes('--verify'));
+  assert.ok(check.args.includes('--deep'));
+  assert.ok(check.args.includes('--strict'));
+  assert.match(check.args[check.args.indexOf('--test-requirement') + 1], /com\.example\.example_plugin.*TESTTEAM01.* and notarized$/);
+  assert.ok(calls.findIndex(x => x.operation === 'stapler validate') < calls.indexOf(check));
+  assert.equal(calls.some(x => x.tool === 'spctl'), false);
+  assert.equal(readFileSync(item.output, 'utf8'), 'archive-with-ticket');
+});
+
+test('failed plugin notarization check preserves the previous output', () => {
+  const item = fixture('.plugin');
+  const result = runNotary(item, { FAKE_NOTARIZATION_FAILURE: '1' }, 'com.example.example_plugin');
+  assert.notEqual(result.status, 0);
+  assert.equal(readFileSync(item.output, 'utf8'), 'previous-successful-download');
+});
+
+test('unsupported bundle types fail before signing or notarization', () => {
+  const item = fixture('.framework');
+  assert.notEqual(runSigning(item).status, 0);
+  assert.notEqual(runNotary(item).status, 0);
+  assert.deepEqual(item.operations(), []);
 });

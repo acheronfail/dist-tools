@@ -1,6 +1,6 @@
 # dist-tools
 
-Sign, notarize, staple and package an already-built macOS app for direct download.
+Sign, notarize, staple and package a macOS app or plugin for direct download.
 Includes a stdin CLI for credential sync and an opt-in credential-health workflow.
 Builds and release publication stay in the caller's repository.
 
@@ -26,12 +26,17 @@ Python 3 and a Developer ID Application certificate:
 
 The output directory must exist. The Action modifies the app in place, uses a
 temporary signing keychain, and verifies its signature, stapled ticket and
-Gatekeeper acceptance before replacing the output ZIP. Rebuild from clean input
-after failure. Failed submissions are not automatically resubmitted.
+notarization before replacing the output ZIP. Apps also pass Gatekeeper execution
+assessment. Rebuild from clean input after failure. Failed submissions are not
+automatically resubmitted.
 
 `v1` tracks compatible updates; `v1.0.0` selects the initial release. A full
 commit SHA pins the exact code. See [action.yml](actions/apple-release/action.yml)
 for all inputs and defaults.
+
+`app-path` also accepts `.plugin` bundles. Plugins use a notarization requirement
+check (`codesign --check-notarization`) instead of app execution assessment.
+Nested plugin libraries belong in the signing plan below.
 
 ### Authentication
 

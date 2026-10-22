@@ -6,11 +6,11 @@ app="${1:?Usage: notarize-app.sh app.app output.zip bundle.id}"
 output="${2:?Usage: notarize-app.sh app.app output.zip bundle.id}"
 bundle_id="${3:?Set the expected bundle ID as the third argument}"
 timeout="${APPLE_NOTARY_TIMEOUT:-20m}"
-[[ "$bundle_id" =~ ^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$ ]] || { echo 'Invalid bundle ID.' >&2; exit 2; }
+[[ "$bundle_id" =~ ^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)+$ ]] || { echo 'Invalid bundle ID.' >&2; exit 2; }
 [[ "$timeout" =~ ^([1-9]|[1-5][0-9]|60)m$ ]] || { echo 'Notary timeout must be between 1m and 60m.' >&2; exit 2; }
 : "${APPLE_TEAM_ID:?Set the publishing Apple Team ID}"
 [[ "$APPLE_TEAM_ID" =~ ^[A-Z0-9]{10}$ ]] || { echo 'Invalid Apple Team ID.' >&2; exit 2; }
-[[ -d "$app" && "$app" == *.app && "$output" == *.zip ]] || { echo 'Expected an app bundle and ZIP output.' >&2; exit 2; }
+[[ -d "$app" && ( "$app" == *.app || "$app" == *.plugin ) && "$output" == *.zip ]] || { echo 'Expected an app or plugin bundle and ZIP output.' >&2; exit 2; }
 requirement="anchor apple generic and identifier \"$bundle_id\" and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = \"$APPLE_TEAM_ID\""
 scripts="$(cd "$(dirname "$0")" && pwd)"
 python3 "$scripts/notary_auth.py" --validate
@@ -100,7 +100,11 @@ for action in staple validate; do
     done
 done
 codesign --verify --deep --strict --test-requirement "=$requirement" "$app"
-spctl --assess --type execute "$app"
+if [[ "$app" == *.plugin ]]; then
+    codesign --verify --deep --strict --check-notarization --test-requirement "=$requirement and notarized" "$app"
+else
+    spctl --assess --type execute "$app"
+fi
 
 # Staple the app, then rebuild the downloadable ZIP. The originally submitted
 # ZIP cannot carry a stapled ticket itself. Replace the output only after checks.
