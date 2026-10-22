@@ -55,7 +55,8 @@ def sign(app_name):
         if preserve:
             command += ['--preserve-metadata=entitlements']
         # Explicit targets preserve embedded payloads such as iOS code.
-        subprocess.run(command + [str(target)], check=True, capture_output=True)
+        # Signature resources are distributed with the bundle, unlike credentials.
+        subprocess.run(command + [str(target)], check=True, capture_output=True, umask=0o022)
 
 
 if __name__ == '__main__':

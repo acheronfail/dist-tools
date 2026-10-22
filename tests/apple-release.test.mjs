@@ -32,7 +32,15 @@ const op = args.slice(0, 2).join(' ');
 const log = (value) => fs.appendFileSync(process.env.FAKE_LOG, JSON.stringify(value) + '\\n');
 log({ tool, args, operation: tool === 'xcrun' ? op : args[0], passwordInEnvironment: !!process.env.APPLE_NOTARY_PASSWORD, apiKeyInEnvironment: !!process.env.APPLE_NOTARY_API_KEY });
 if (tool === 'xcodebuild') { console.log('Xcode ' + (process.env.FAKE_XCODE_VERSION || '26.0')); process.exit(0); }
-if (tool === 'codesign') process.exit(process.env.FAKE_SIGNATURE_FAILURE || (args.at(-1).endsWith('.dmg') && process.env.FAKE_DMG_SIGNATURE_FAILURE) || (args.includes('--check-notarization') && process.env.FAKE_NOTARIZATION_FAILURE) ? 1 : 0);
+if (tool === 'codesign') {
+  if (process.env.FAKE_SIGNATURE_FAILURE || (args.at(-1).endsWith('.dmg') && process.env.FAKE_DMG_SIGNATURE_FAILURE) || (args.includes('--check-notarization') && process.env.FAKE_NOTARIZATION_FAILURE)) process.exit(1);
+  if (args.includes('--force') && fs.statSync(args.at(-1)).isDirectory()) {
+    const resources = path.join(args.at(-1), 'Contents/_CodeSignature');
+    fs.mkdirSync(resources, { recursive: true });
+    fs.writeFileSync(path.join(resources, 'CodeResources'), 'public-signature-resources');
+  }
+  process.exit(0);
+}
 if (tool === 'xcrun') {
   if (op === 'notarytool store-credentials') {
     const key = args.includes('--key') ? args[args.indexOf('--key') + 1] : null;
@@ -890,5 +898,26 @@ for (const [suffix, destination] of [
     const item = fixture(suffix);
     assert.notEqual(runRelease(item, { APPLE_RELEASE_DMG: join(item.path, destination) }).status, 0);
     assert.deepEqual(item.operations(), []);
+  });
+}
+
+for (const suffix of ['.app', '.plugin']) {
+  test(`new ${suffix} signature resources remain readable under a private parent umask`, () => {
+    const item = fixture(suffix);
+    const helper = join(item.app, 'Contents/Helpers/Example.app');
+    mkdirSync(helper, { recursive: true });
+    const plan = join(item.path, 'signing-plan.json');
+    writeFileSync(plan, JSON.stringify([{ path: 'Contents/Helpers/Example.app' }]));
+    const result = spawnSync('bash', ['-c', 'umask 077; exec python3 "$@"', '--', join(root, 'scripts/apple-signing/sign-app.py'), item.app], {
+      env: { ...item.env, CODE_SIGN_IDENTITY: 'A'.repeat(40), CODE_SIGN_KEYCHAIN: '/tmp/test.keychain-db', APPLE_SIGNING_PLAN: plan },
+      encoding: 'utf8', timeout: 10_000,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    for (const bundle of [helper, item.app]) {
+      assert.equal(statSync(join(bundle, 'Contents/_CodeSignature')).mode & 0o777, 0o755);
+      const resources = join(bundle, 'Contents/_CodeSignature/CodeResources');
+      assert.equal(statSync(resources).mode & 0o777, 0o644);
+      assert.equal(readFileSync(resources, 'utf8'), 'public-signature-resources');
+    }
   });
 }
