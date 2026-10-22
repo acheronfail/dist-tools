@@ -193,6 +193,7 @@ test('sync sends secrets over stdin, reports partial failure, and supports rerun
   const failed = run('sync', [], source, { FAIL_REPO: 'example-owner/first' });
   assert.equal(failed.status, 1);
   assert.deepEqual(JSON.parse(failed.stdout).results.map(x => x.status), ['failed', 'updated']);
+  assert.match(JSON.parse(failed.stdout).results[0].message, /Check gh authentication and repository access/);
   assert.doesNotMatch(failed.stdout + failed.stderr, /secret-sentinel/);
   const retry = run('sync', []);
   const again = run('sync', []);
@@ -365,12 +366,14 @@ test('sync with empty redirected input explains how to provide credentials witho
   assert.deepEqual(result.calls, []);
 });
 
-for (const choice of ['default', 'custom', 'missing']) {
-  test(`interactive sync prompts for the credential file: ${choice}`, () => {
+const interactiveCases = ['sync', 'inspect'].flatMap(operation =>
+  ['default', 'custom', 'missing'].map(choice => ({ operation, choice })));
+for (const { operation, choice } of interactiveCases) {
+  test(`interactive ${operation} prompts for the credential file: ${choice}`, () => {
     writeFileSync(join(checkout, 'repositories.yaml'), 'repositories:\n  - example-owner/first\n');
     const file = choice === 'default' ? join(checkout, '.local/credentials.json') : join(work, `selected credentials-${choice}.json`);
     if (choice !== 'missing') writeFileSync(file, JSON.stringify(source));
-    const log = join(work, `interactive-sync-${++counter}.jsonl`);
+    const log = join(work, `interactive-${operation}-${++counter}.jsonl`);
     const code = `import builtins,io,sys
 sys.path.insert(0,sys.argv[1])
 from credentials import main
@@ -382,9 +385,9 @@ def choose(prompt):
     assert 'Credential JSON path' in prompt
     return sys.argv[2]
 builtins.input=choose
-raise SystemExit(main(['apple','credentials','sync']))
+raise SystemExit(main(['apple','credentials',sys.argv[3]]))
 `;
-    const result = spawnSync('python3', ['-c', code, join(checkout, 'cli'), choice === 'default' ? '' : file], {
+    const result = spawnSync('python3', ['-c', code, join(checkout, 'cli'), choice === 'default' ? '' : file, operation], {
       cwd: unrelated, encoding: 'utf8', timeout: 15_000,
       env: { ...process.env, PATH: bin + delimiter + process.env.PATH, FAKE_GH_LOG: log },
     });
@@ -395,8 +398,40 @@ raise SystemExit(main(['apple','credentials','sync']))
       assert.equal(existsSync(log), false);
     } else {
       assert.equal(result.status, 0, result.stderr);
-      assert.deepEqual(JSON.parse(result.stdout).results, [{ repository: 'example-owner/first', status: 'updated' }]);
-      assert.ok(existsSync(log));
+      if (operation === 'sync') {
+        assert.deepEqual(JSON.parse(result.stdout).results, [{ repository: 'example-owner/first', status: 'updated' }]);
+        assert.ok(existsSync(log));
+      } else {
+        assert.equal(JSON.parse(result.stdout).inspection.valid_now, true);
+        assert.equal(existsSync(log), false);
+      }
     }
   });
 }
+
+test('inspect does not apply GitHub secret-size limits, while sync still rejects oversized secrets', () => {
+  const credentials = { ...source, APPLE_NOTARY_PASSWORD: 'x'.repeat(49 * 1024) };
+  const inspected = run('inspect', [], credentials);
+  assert.equal(inspected.status, 0, inspected.stderr);
+  assert.deepEqual(inspected.calls, []);
+  const synced = run('sync', [], credentials);
+  assert.equal(synced.status, 1);
+  assert.match(synced.stderr, /secret size limit/);
+  assert.deepEqual(synced.calls, []);
+});
+
+test('ending an interactive prompt with Ctrl-D exits cleanly', () => {
+  const code = `import builtins,io,sys
+sys.path.insert(0,sys.argv[1])
+from credentials import main
+class Terminal(io.StringIO):
+    def isatty(self): return True
+sys.stdin=Terminal()
+def cancel(prompt): raise EOFError
+builtins.input=cancel
+raise SystemExit(main(['apple','credentials','inspect']))
+`;
+  const result = spawnSync('python3', ['-c', code, join(checkout, 'cli')], { encoding: 'utf8', timeout: 2_000 });
+  assert.equal(result.status, 1);
+  assert.equal(result.stderr.trim(), 'Input cancelled.');
+});

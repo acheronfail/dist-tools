@@ -40,7 +40,9 @@ def run(args, *, data=None, password=None):
         return subprocess.run(args, input=data, env=env, capture_output=True,
                               timeout=60, check=True).stdout
     except (OSError, subprocess.SubprocessError):
-        raise CredentialError('Credential validation or GitHub operation failed; diagnostics suppressed.') from None
+        message = ('GitHub update failed. Check gh authentication and repository access.' if args[0] == 'gh' else
+                   'Credential validation failed. Check the certificate, export password and API key.')
+        raise CredentialError(message) from None
 
 
 def read_source(stream):
@@ -73,7 +75,7 @@ def read_source(stream):
     except CredentialError:
         raise
     except (ValueError, AuthError):
-        raise CredentialError('Expected one complete credential JSON object on stdin; no mixed auth modes.') from None
+        raise CredentialError('Expected a complete credential JSON object with one notarization auth mode.') from None
 
 
 def inspect(source):
@@ -243,7 +245,7 @@ def main(argv=None):
             if args.operation == 'create' and args.credentials.exists():
                 raise CredentialError('Credential JSON already exists; use renew to replace its certificate.')
             if args.operation == 'renew' and not args.credentials.is_file():
-                raise CredentialError('Export your existing credential JSON to .local/credentials.json before renewing.')
+                raise CredentialError('Credential JSON file not found. Export it from your password manager before renewing.')
             if not sys.stdin.isatty():
                 raise CredentialError('Run this command in a terminal to enter the PKCS12 password.')
             p12 = Path(input('Developer ID Application .p12 path: ').strip()).expanduser()
@@ -272,13 +274,13 @@ def main(argv=None):
         else:
             source = read_source(sys.stdin)
         metadata = inspect(source)
-        secrets, variables = payload(source)
         report = {'inspection': metadata}
         if args.operation == 'inspect':
             print(json.dumps(report, indent=2))
             return 0 if metadata['valid_now'] else 1
         if not metadata['valid_now']:
             raise CredentialError('Signing certificate is expired or not yet valid; no writes performed.')
+        secrets, variables = payload(source)
         report.update({'dry_run': args.dry_run, 'targets': targets,
                        'secret_names': list(secrets), 'variable_names': list(variables)})
         if args.dry_run:
@@ -293,17 +295,20 @@ def main(argv=None):
                         run(['gh', kind, 'set', name, '--repo', repo], data=value.encode())
                         completed.append(name)
                 results.append({'repository': repo, 'status': 'updated'})
-            except CredentialError:
+            except CredentialError as error:
                 results.append({'repository': repo, 'status': 'failed', 'completed': completed,
-                                'message': 'Partial updates are possible. Correct the failure and rerun the same source.'})
+                                'message': f'{error} Partial updates are possible; correct the failure and rerun.'})
         report['results'] = results
         print(json.dumps(report, indent=2))
         return 1 if any(result['status'] == 'failed' for result in results) else 0
+    except EOFError:
+        print('Input cancelled.', file=sys.stderr)
+        return 1
     except CredentialError as error:
         print(str(error), file=sys.stderr)
         return 1
     except (OSError, ValueError, KeyError, TypeError):
-        print('Credential operation failed; private diagnostics were suppressed.', file=sys.stderr)
+        print('Unable to read or update credentials. Check the input files and their permissions.', file=sys.stderr)
         return 1
 
 

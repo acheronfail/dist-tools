@@ -1,7 +1,7 @@
 # dist-tools
 
 Sign and notarize macOS apps and plugins, package ZIPs and DMGs, and sync Apple
-credentials across GitHub repositories. Build and publish releases in the caller.
+credentials across GitHub repositories. Caller repositories build apps and publish releases.
 
 ## GitHub Action
 
@@ -42,14 +42,17 @@ Entries may include `"entitlements": "path/to/file.plist"` or
 `"preserve-entitlements": true`. Use the Action's `entitlements` input for the
 outer app. Only the listed nested targets and the outer bundle are signed.
 
-The example uses an App Store Connect team API key. Individual keys omit the
-issuer ID and require Xcode 26+. Apple Account authentication instead uses
+The example uses an App Store Connect team API key. Individual keys omit
+`notary-issuer-id` and require Xcode 26+. Apple Account authentication instead uses
 `notary-auth-mode: apple-id`, `notary-apple-id` and `notary-password`.
 
 ## Setup and renewal
 
-The CLI needs Python 3, OpenSSL and authenticated `gh` with access to manage
-Actions secrets and variables in each target repository.
+The CLI needs Python 3 and OpenSSL. Sync also needs authenticated `gh` with
+access to manage Actions secrets and variables in each target repository.
+
+Already set up? Restore `repositories.yaml`, export your saved credential JSON
+to `.local/credentials.json`, then run `bin/dist-tools apple credentials sync`.
 
 **First time**
 
@@ -93,7 +96,7 @@ need replacing only when rotated or revoked. Follow the certificate's expiry dat
 [Apple's current G2 guidance is annual renewal](https://developer.apple.com/news/?id=w4atic4c).
 
 Check every repo reports `updated`, then remove the temporary JSON export.
-`sync` prompts for the JSON path, defaulting to `.local/credentials.json`.
-Piped or redirected JSON is also accepted.
+`sync` and `inspect` prompt for the JSON path, defaulting to `.local/credentials.json`
+in this checkout. Both also accept piped or redirected JSON.
 Sync validates credentials locally; the next signed build checks Apple acceptance.
 Use `sync --dry-run` to preview without GitHub calls, or `inspect` to check expiry.
