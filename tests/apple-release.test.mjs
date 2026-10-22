@@ -10,6 +10,7 @@ import {
   rmSync,
   symlinkSync,
   readdirSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -56,8 +57,11 @@ if (tool === 'xcrun') {
     const attempt = fs.existsSync(counter) ? Number(fs.readFileSync(counter, 'utf8')) + 1 : 1;
     fs.writeFileSync(counter, String(attempt));
     if (attempt <= Number(process.env.FAKE_STAPLE_LOOKUP_FAILURES || 0)) process.exit(68);
-    if (fs.statSync(args[2]).isDirectory()) fs.writeFileSync(path.join(args[2], '.ticket'), 'ticket');
-    else fs.appendFileSync(args[2], '-ticket');
+    if (fs.statSync(args[2]).isDirectory()) {
+      fs.writeFileSync(path.join(args[2], '.ticket'), 'ticket');
+      fs.mkdirSync(path.join(args[2], 'Contents'), { recursive: true });
+      fs.writeFileSync(path.join(args[2], 'Contents/CodeResources'), 'public-notary-ticket');
+    } else fs.appendFileSync(args[2], '-ticket');
     process.exit(0);
   }
   if (op === 'stapler validate') {
@@ -186,6 +190,19 @@ test("notarization staples before rebuilding the downloadable ZIP", () => {
     false,
   );
 });
+
+for (const suffix of ['.app', '.plugin']) {
+  test(`stapled ${suffix} tickets remain readable after the private credential-file umask`, () => {
+    const item = fixture(suffix);
+    mkdirSync(join(item.app, 'Contents'), { recursive: true });
+    const ticket = join(item.app, 'Contents/CodeResources');
+    writeFileSync(ticket, 'previous-ticket', { mode: 0o600 });
+    const result = runNotary(item);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(statSync(ticket).mode & 0o777, 0o644);
+    assert.equal(readFileSync(ticket, 'utf8'), 'public-notary-ticket');
+  });
+}
 for (const status of ["Invalid", "Rejected", "In Progress", "malformed"]) {
   test(`notarization ${status} preserves the previous download and never staples`, () => {
     const item = fixture();

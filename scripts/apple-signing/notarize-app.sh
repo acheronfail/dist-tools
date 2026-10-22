@@ -114,6 +114,11 @@ for action in staple validate; do
         sleep "$delay"
     done
 done
+# Stapler inherits the private-file umask, but its bundle ticket is public data.
+ticket="$app/Contents/CodeResources"
+if [[ "$disk_image" == false && -f "$ticket" && ! -L "$ticket" ]]; then
+    chmod a+r "$ticket"
+fi
 codesign "${verification[@]}" --test-requirement "=$requirement" "$app"
 if [[ "$app" == *.plugin ]]; then
     codesign --verify --deep --strict --check-notarization --test-requirement "=$requirement and notarized" "$app"
