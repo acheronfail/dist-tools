@@ -1,5 +1,6 @@
 # Local configuration and signing files
 .local/
+/repositories.yaml
 .env
 .env.*
 !.env.example

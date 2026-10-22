@@ -1,8 +1,10 @@
-"""Provider-neutral credential inspection and allowlisted GitHub synchronisation."""
+"""Apple signing credentials and repository sync."""
 
 import argparse
 import base64
 from datetime import datetime, timezone
+import getpass
+import io
 import json
 import math
 import os
@@ -19,6 +21,9 @@ from notary_auth import FIELDS, validate, AuthError
 P12 = 'MACOS_CODE_SIGN_P12_BASE64'
 PASSWORD = 'MACOS_CODE_SIGN_P12_PASSWORD'
 ALLOWED = {P12, PASSWORD, 'APPLE_TEAM_ID', 'APPLE_NOTARY_AUTH_MODE', *FIELDS}
+ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_CONFIG = ROOT / 'repositories.yaml'
+DEFAULT_CREDENTIALS = ROOT / '.local/credentials.json'
 
 
 class CredentialError(ValueError):
@@ -51,12 +56,16 @@ def read_source(stream, *, signing_only=False):
             raise ValueError()
         for value in source.values():
             value.encode('utf8')
-        required = (P12, PASSWORD, 'APPLE_TEAM_ID') + (() if signing_only else ('APPLE_NOTARY_AUTH_MODE',))
+        required = (P12, PASSWORD, 'APPLE_TEAM_ID')
         if not all(name in source for name in required):
             raise ValueError()
         if not re.fullmatch(r'[A-Z0-9]{10}', source['APPLE_TEAM_ID']):
             raise ValueError()
         if not signing_only:
+            if 'APPLE_NOTARY_AUTH_MODE' not in source:
+                source['APPLE_NOTARY_AUTH_MODE'] = (
+                    'apple-id' if any(source.get(name) for name in FIELDS[:2]) else
+                    'api-team' if source.get('APPLE_NOTARY_ISSUER_ID') else 'api-individual')
             validate({**source, 'GITHUB_ACTIONS': 'true'})
         return source
     except (ValueError, AuthError):
@@ -120,26 +129,74 @@ def inspect(source, *, signing_only=False):
             'valid_now': start <= now < end, 'auth_mode': source.get('APPLE_NOTARY_AUTH_MODE', 'not-checked')}
 
 
-def select_targets(config, repositories, all_repositories):
+def load_repositories(config):
     try:
-        value = json.loads(Path(config).read_text())
-        if not isinstance(value, dict) or set(value) != {'repositories'}:
-            raise ValueError()
-        allowlist = value['repositories']
-        if not isinstance(allowlist, list) or not allowlist:
-            raise ValueError()
         pattern = r'[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}'
-        if any(not isinstance(repo, str) or not re.fullmatch(pattern, repo) or repo.split('/')[1] in ('.', '..') for repo in allowlist):
+        # Read the repositories field as a YAML block list of repository strings.
+        entry = re.compile(r'^( *)- +([\'"]?)(' + pattern + r')\2(?: +#.*)? *$')
+        repositories, indentation, header = [], None, False
+        for line in Path(config).read_text(encoding='utf-8-sig').splitlines():
+            if not line.strip() or line.lstrip().startswith('#'):
+                continue
+            if not header:
+                if not re.fullmatch(r'repositories: *(?:#.*)?', line):
+                    raise ValueError()
+                header = True
+                continue
+            match = entry.fullmatch(line)
+            if not match or (indentation is not None and match[1] != indentation):
+                raise ValueError()
+            indentation = match[1]
+            repo = match[3]
+            if repo.split('/')[1] in ('.', '..'):
+                raise ValueError()
+            repositories.append(repo)
+        if not repositories or len({repo.lower() for repo in repositories}) != len(repositories):
             raise ValueError()
-        lookup = {repo.lower(): repo for repo in allowlist}
-        if len(lookup) != len(allowlist):
-            raise ValueError()
-        selected = allowlist if all_repositories else repositories
-        if not selected or any(repo.lower() not in lookup for repo in selected):
-            raise ValueError()
-        return list(dict.fromkeys(lookup[repo.lower()] for repo in selected))
-    except (OSError, ValueError, KeyError, TypeError):
-        raise CredentialError('Invalid allowlist or target repository is not allowlisted.') from None
+        return repositories
+    except FileNotFoundError:
+        raise CredentialError('Copy repositories.example.yaml to repositories.yaml in the dist-tools checkout '
+                              'and edit the repository list.') from None
+    except (OSError, ValueError, TypeError):
+        raise CredentialError('Invalid repository config; use a repositories: list of unique owner/repo names.') from None
+
+
+def save_credentials(credentials, source, *, replace=False):
+    credentials = Path(credentials)
+    metadata = inspect(read_source(io.StringIO(json.dumps(source))))
+    if not metadata['valid_now']:
+        raise CredentialError('Certificate is expired or not yet valid; credentials unchanged.')
+    credentials.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix='.credentials-', dir=credentials.parent)
+    try:
+        with os.fdopen(descriptor, 'w') as stream:
+            json.dump(source, stream, indent=2)
+            stream.write('\n')
+        if replace:
+            os.replace(temporary, credentials)
+        else:
+            os.link(temporary, credentials)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
+def create(credentials, p12, api_key, team, key_id, issuer, password):
+    if Path(credentials).exists():
+        raise CredentialError('Credential JSON already exists; use renew to replace its certificate.')
+    source = {P12: base64.b64encode(Path(p12).read_bytes()).decode(), PASSWORD: password,
+              'APPLE_TEAM_ID': team, 'APPLE_NOTARY_API_KEY': Path(api_key).read_text(),
+              'APPLE_NOTARY_KEY_ID': key_id}
+    if issuer:
+        source['APPLE_NOTARY_ISSUER_ID'] = issuer
+    save_credentials(credentials, source)
+
+
+def renew(credentials, p12, password):
+    with Path(credentials).open() as stream:
+        source = read_source(stream, signing_only=True)
+    source[P12] = base64.b64encode(Path(p12).read_bytes()).decode()
+    source[PASSWORD] = password
+    save_credentials(credentials, source, replace=True)
 
 
 def payload(source):
@@ -160,31 +217,51 @@ def main(argv=None):
     def terminate(signum, _frame):
         raise SystemExit(128 + signum)
     signal.signal(signal.SIGTERM, terminate)
-    parser = argparse.ArgumentParser(description='Inspect, sync or check credential JSON from stdin.')
-    parser.add_argument('apple', choices=['apple'])
-    parser.add_argument('credentials', choices=['credentials'])
-    parser.add_argument('operation', choices=['inspect', 'sync', 'health'])
-    parser.add_argument('--config', help='JSON repository allowlist (required for sync)')
-    selection = parser.add_mutually_exclusive_group()
-    selection.add_argument('--repo', action='append', help='Explicit allowlisted target; repeatable')
-    selection.add_argument('--all', action='store_true', help='All repositories in the allowlist')
-    parser.add_argument('--dry-run', action='store_true', help='Validate and show targets without any GitHub calls')
-    parser.add_argument('--issue-repo', help='Publish deduplicated health issues to this explicit repository')
-    parser.add_argument('--check-notary', action='store_true', help='Also validate auth/import on a disposable hosted Mac')
+    parser = argparse.ArgumentParser(description='Manage Apple signing credentials.')
+    apple = parser.add_subparsers(required=True).add_parser('apple')
+    credentials = apple.add_subparsers(required=True).add_parser('credentials')
+    operations = credentials.add_subparsers(dest='operation', required=True)
+    operations.add_parser('inspect', help='Inspect credentials without contacting GitHub')
+    sync = operations.add_parser('sync', help='Sync credentials to every configured repository')
+    sync.add_argument('--config', default=DEFAULT_CONFIG,
+                      help='YAML repository list (default: repositories.yaml in the dist-tools checkout)')
+    sync.add_argument('--dry-run', action='store_true', help='Validate and show targets without any GitHub calls')
+    for operation, description in (('create', 'Create credential JSON from .p12 and .p8 files'),
+                                   ('renew', 'Replace only the certificate in your credential JSON')):
+        command = operations.add_parser(operation, help=description)
+        if operation == 'renew':
+            command.add_argument('p12', type=Path, help='Developer ID Application .p12 export')
+        command.add_argument('--credentials', type=Path, default=DEFAULT_CREDENTIALS,
+                             help='Credential JSON (default: .local/credentials.json in the dist-tools checkout)')
+    health = operations.add_parser('health', help='Check certificate validity and optionally notary authentication')
+    health.add_argument('--issue-repo', help='Publish health issues to this repository')
+    health.add_argument('--check-notary', action='store_true', help='Also check notary authentication on a hosted Mac')
     args = parser.parse_args(argv)
     try:
+        if args.operation in ('create', 'renew'):
+            if args.operation == 'create' and args.credentials.exists():
+                raise CredentialError('Credential JSON already exists; use renew to replace its certificate.')
+            if args.operation == 'renew' and not args.credentials.is_file():
+                raise CredentialError('Export your existing credential JSON to .local/credentials.json before renewing.')
+            if not sys.stdin.isatty():
+                raise CredentialError('Run this command in a terminal to enter the PKCS12 password.')
+            if args.operation == 'create':
+                p12 = Path(input('Developer ID Application .p12 path: ').strip()).expanduser()
+                api_key = Path(input('App Store Connect API .p8 path: ').strip()).expanduser()
+                if not p12.is_file() or not api_key.is_file():
+                    raise CredentialError('The .p12 and .p8 paths must name existing files.')
+            password = getpass.getpass('PKCS12 export password: ')
+            if args.operation == 'create':
+                create(args.credentials, p12, api_key, input('Apple Team ID: ').strip(),
+                       input('API Key ID: ').strip(), input('Issuer ID (blank for an individual key): ').strip(), password)
+            else:
+                renew(args.credentials, args.p12, password)
+            print('Credentials saved. Update your password-manager copy, then run sync.')
+            return 0
         if args.operation == 'health':
-            if args.config or args.repo or args.all or args.dry_run:
-                raise CredentialError('Sync options do not apply to health checks.')
             from health import check
             return check(sys.stdin, issue_repo=args.issue_repo, check_notary=args.check_notary)
-        if args.issue_repo or args.check_notary:
-            raise CredentialError('Health options apply only to health checks.')
-        targets = []
-        if args.operation == 'sync':
-            targets = select_targets(args.config, args.repo, args.all)
-        elif args.config or args.repo or args.all or args.dry_run:
-            raise CredentialError('Repository selection and dry-run options apply only to sync.')
+        targets = load_repositories(args.config) if args.operation == 'sync' else []
         source = read_source(sys.stdin)
         metadata = inspect(source)
         secrets, variables = payload(source)
