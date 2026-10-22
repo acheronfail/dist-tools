@@ -73,7 +73,7 @@ Actions secrets and variables in each target repository.
 5. Sync every repository in `repositories.yaml`:
 
    ```sh
-   bin/dist-tools apple credentials sync < .local/credentials.json
+   bin/dist-tools apple credentials sync
    ```
 
 **When the certificate expires**
@@ -82,16 +82,18 @@ Create and export a replacement Developer ID Application certificate as above.
 Export your saved JSON from your password manager to `.local/credentials.json`, then:
 
 ```sh
-bin/dist-tools apple credentials renew path/to/new-developer-id.p12
-bin/dist-tools apple credentials sync < .local/credentials.json
+bin/dist-tools apple credentials renew
+bin/dist-tools apple credentials sync
 ```
 
-`renew` prompts for the new export password and replaces only
+`renew` prompts for the new `.p12` path and export password, then replaces only
 `MACOS_CODE_SIGN_P12_BASE64` and `MACOS_CODE_SIGN_P12_PASSWORD`. Save the updated
 JSON back to your password manager. Team and Issuer IDs stay the same; API keys
 need replacing only when rotated or revoked. Follow the certificate's expiry date;
 [Apple's current G2 guidance is annual renewal](https://developer.apple.com/news/?id=w4atic4c).
 
 Check every repo reports `updated`, then remove the temporary JSON export.
+`sync` prompts for the JSON path, defaulting to `.local/credentials.json`.
+Piped or redirected JSON is also accepted.
 Sync validates credentials locally; the next signed build checks Apple acceptance.
 Use `sync --dry-run` to preview without GitHub calls, or `inspect` to check expiry.

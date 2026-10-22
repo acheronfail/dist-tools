@@ -293,10 +293,9 @@ answers=iter(request['answers'])
 builtins.input=lambda prompt: next(answers)
 raise SystemExit(main(sys.argv[2:]))
 `;
-  const result = spawnSync('python3', ['-c', code, join(checkout, 'cli'), 'apple', 'credentials', operation,
-    ...(operation === 'renew' ? [p12] : [])], {
+  const result = spawnSync('python3', ['-c', code, join(checkout, 'cli'), 'apple', 'credentials', operation], {
     cwd: unrelated, encoding: 'utf8', timeout: 15_000,
-    input: JSON.stringify({ password, answers: [...(operation === 'create' ? [p12, apiFile] : []), 'TESTTEAM01', 'TESTKEY001', issuer] }),
+    input: JSON.stringify({ password, answers: [p12, ...(operation === 'create' ? [apiFile, 'TESTTEAM01', 'TESTKEY001', issuer] : [])] }),
     env: { ...process.env, PATH: bin + delimiter + process.env.PATH, FAKE_GH_LOG: log },
   });
   assert.equal(existsSync(log), false, 'Credential management must not contact GitHub');
@@ -333,7 +332,7 @@ for (const auth of [
   source,
   { APPLE_TEAM_ID: 'TESTTEAM01', APPLE_NOTARY_API_KEY: apiKey, APPLE_NOTARY_KEY_ID: 'TESTKEY001', APPLE_NOTARY_ISSUER_ID: issuer },
 ]) {
-  test(`renew replaces an expired certificate and preserves ${auth.APPLE_NOTARY_API_KEY ? 'API' : 'Apple ID'} credentials`, () => {
+  test(`renew without arguments prompts for the replacement and preserves ${auth.APPLE_NOTARY_API_KEY ? 'API' : 'Apple ID'} credentials`, () => {
     const previous = { ...auth, MACOS_CODE_SIGN_P12_BASE64: expired, MACOS_CODE_SIGN_P12_PASSWORD: 'previous-export-password' };
     const result = manage('renew', previous);
     assert.equal(result.status, 0, result.stderr);
@@ -355,5 +354,49 @@ for (const [description, existing, p12, password] of [
     assert.equal(result.status, 1);
     assert.equal(readFileSync(result.destination, 'utf8'), result.before);
     assert.equal(statSync(result.destination).mode & 0o777, 0o644);
+  });
+}
+
+test('sync with empty redirected input explains how to provide credentials without GitHub calls', () => {
+  const result = run('sync', [], '');
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /No credential JSON received/);
+  assert.match(result.stderr, /< .local\/credentials.json/);
+  assert.deepEqual(result.calls, []);
+});
+
+for (const choice of ['default', 'custom', 'missing']) {
+  test(`interactive sync prompts for the credential file: ${choice}`, () => {
+    writeFileSync(join(checkout, 'repositories.yaml'), 'repositories:\n  - example-owner/first\n');
+    const file = choice === 'default' ? join(checkout, '.local/credentials.json') : join(work, `selected credentials-${choice}.json`);
+    if (choice !== 'missing') writeFileSync(file, JSON.stringify(source));
+    const log = join(work, `interactive-sync-${++counter}.jsonl`);
+    const code = `import builtins,io,sys
+sys.path.insert(0,sys.argv[1])
+from credentials import main
+class Terminal(io.StringIO):
+    def isatty(self): return True
+    def read(self,*args): raise AssertionError('Must not wait for raw JSON on a terminal')
+sys.stdin=Terminal()
+def choose(prompt):
+    assert 'Credential JSON path' in prompt
+    return sys.argv[2]
+builtins.input=choose
+raise SystemExit(main(['apple','credentials','sync']))
+`;
+    const result = spawnSync('python3', ['-c', code, join(checkout, 'cli'), choice === 'default' ? '' : file], {
+      cwd: unrelated, encoding: 'utf8', timeout: 15_000,
+      env: { ...process.env, PATH: bin + delimiter + process.env.PATH, FAKE_GH_LOG: log },
+    });
+    assert.doesNotMatch(result.stdout + result.stderr, /synthetic-password|notary-secret-sentinel|TESTTEAM01/);
+    if (choice === 'missing') {
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /Credential JSON file not found/);
+      assert.equal(existsSync(log), false);
+    } else {
+      assert.equal(result.status, 0, result.stderr);
+      assert.deepEqual(JSON.parse(result.stdout).results, [{ repository: 'example-owner/first', status: 'updated' }]);
+      assert.ok(existsSync(log));
+    }
   });
 }

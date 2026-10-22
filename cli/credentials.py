@@ -47,6 +47,9 @@ def read_source(stream):
     try:
         # Bound decrypted input; reject unknown fields rather than forwarding them.
         raw = stream.read(1_048_577)
+        if not raw.strip():
+            raise CredentialError('No credential JSON received. Run interactively to choose a file, '
+                                  'or redirect input with < .local/credentials.json.')
         if len(raw) > 1_048_576:
             raise ValueError()
         source = json.loads(raw)
@@ -67,6 +70,8 @@ def read_source(stream):
                 'api-team' if source.get('APPLE_NOTARY_ISSUER_ID') else 'api-individual')
         validate({**source, 'GITHUB_ACTIONS': 'true'})
         return source
+    except CredentialError:
+        raise
     except (ValueError, AuthError):
         raise CredentialError('Expected one complete credential JSON object on stdin; no mixed auth modes.') from None
 
@@ -230,8 +235,6 @@ def main(argv=None):
     for operation, description in (('create', 'Create credential JSON from .p12 and .p8 files'),
                                    ('renew', 'Replace only the certificate in your credential JSON')):
         command = operations.add_parser(operation, help=description)
-        if operation == 'renew':
-            command.add_argument('p12', type=Path, help='Developer ID Application .p12 export')
         command.add_argument('--credentials', type=Path, default=DEFAULT_CREDENTIALS,
                              help='Credential JSON (default: .local/credentials.json in the dist-tools checkout)')
     args = parser.parse_args(argv)
@@ -243,21 +246,31 @@ def main(argv=None):
                 raise CredentialError('Export your existing credential JSON to .local/credentials.json before renewing.')
             if not sys.stdin.isatty():
                 raise CredentialError('Run this command in a terminal to enter the PKCS12 password.')
+            p12 = Path(input('Developer ID Application .p12 path: ').strip()).expanduser()
+            if not p12.is_file():
+                raise CredentialError('The .p12 path must name an existing file.')
             if args.operation == 'create':
-                p12 = Path(input('Developer ID Application .p12 path: ').strip()).expanduser()
                 api_key = Path(input('App Store Connect API .p8 path: ').strip()).expanduser()
-                if not p12.is_file() or not api_key.is_file():
-                    raise CredentialError('The .p12 and .p8 paths must name existing files.')
+                if not api_key.is_file():
+                    raise CredentialError('The .p8 path must name an existing file.')
             password = getpass.getpass('PKCS12 export password: ')
             if args.operation == 'create':
                 create(args.credentials, p12, api_key, input('Apple Team ID: ').strip(),
                        input('API Key ID: ').strip(), input('Issuer ID (blank for an individual key): ').strip(), password)
             else:
-                renew(args.credentials, args.p12, password)
+                renew(args.credentials, p12, password)
             print('Credentials saved. Update your password-manager copy, then run sync.')
             return 0
         targets = load_repositories(args.config) if args.operation == 'sync' else []
-        source = read_source(sys.stdin)
+        if sys.stdin.isatty():
+            filename = input('Credential JSON path [.local/credentials.json]: ').strip()
+            path = Path(filename).expanduser() if filename else DEFAULT_CREDENTIALS
+            if not path.is_file():
+                raise CredentialError('Credential JSON file not found. Export it from your password manager first.')
+            with path.open() as stream:
+                source = read_source(stream)
+        else:
+            source = read_source(sys.stdin)
         metadata = inspect(source)
         secrets, variables = payload(source)
         report = {'inspection': metadata}
